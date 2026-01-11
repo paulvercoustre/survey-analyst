@@ -1,0 +1,5 @@
+{
+  "name": "Survey Analyst Bot",
+  "description": "A specialized chatbot that helps draft reports by cross-referencing KoboToolbox questionnaire definitions with long-format survey result data using the Gemini API.",
+  "requestFramePermissions": []
+}
