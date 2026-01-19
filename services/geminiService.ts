@@ -339,10 +339,25 @@ export class SurveyAgent {
   }
 
   // --- Main Message Handler ---
-  public async sendMessage(userMessage: string): Promise<{ text: string, dataUsed?: any[] }> {
+  public async sendMessage(
+    userMessage: string, 
+    signal?: AbortSignal,
+    onProgress?: (stage: string) => void
+  ): Promise<{ text: string, dataUsed?: any[] }> {
     try {
+      // Check if already aborted
+      if (signal?.aborted) {
+        throw new DOMException('Request cancelled', 'AbortError');
+      }
+
+      onProgress?.("Identifying relevant variables...");
       const relevantVars = await this.identifyRelevantQuestions(userMessage);
-      
+
+      // Check again after identifyRelevantQuestions
+      if (signal?.aborted) {
+        throw new DOMException('Request cancelled', 'AbortError');
+      }
+
       let messageToSend = userMessage;
       if (relevantVars.length > 0) {
         messageToSend = `${userMessage}\n\n[System Note: Relevant variables identified: ${relevantVars.join(', ')}. Decide whether to use Quant or Qual tools based on the variable type in your system instruction.]`;
@@ -350,50 +365,110 @@ export class SurveyAgent {
         messageToSend = `${userMessage}\n\n[System Note: No direct variables found. Ask for clarification if needed.]`;
       }
 
-      let response = await this.chatSession.sendMessage({ message: messageToSend });
+      onProgress?.("Analyzing your question...");
+      
+      // Create a promise that can be aborted
+      const sendMessagePromise = this.chatSession.sendMessage({ message: messageToSend });
+
+      // Race between the API call and abort signal
+      let response;
+      if (signal) {
+        const abortPromise = new Promise<never>((_, reject) => {
+          const abortHandler = () => {
+            console.log('Abort signal received in service');
+            reject(new DOMException('Request cancelled', 'AbortError'));
+          };
+          
+          // Check if already aborted
+          if (signal.aborted) {
+            abortHandler();
+          } else {
+            signal.addEventListener('abort', abortHandler);
+          }
+        });
+        
+        response = await Promise.race([sendMessagePromise, abortPromise]);
+      } else {
+        response = await sendMessagePromise;
+      }
       
       let functionCalls = response.functionCalls;
       let collectedData: any[] = [];
       let maxLoops = 5; 
 
       while (functionCalls && functionCalls.length > 0 && maxLoops > 0) {
-        const parts = functionCalls.map((call: any) => {
+        // Process each function call with individual progress updates
+        const parts: any[] = [];
+        
+        for (const call of functionCalls) {
           const args = call.args as any;
+          const variableName = args.question_name || 'unknown';
 
           if (call.name === QUANT_TOOL_NAME) {
+            onProgress?.(`Querying: ${variableName} (quantitative)`);
+            // Allow UI to update
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
             const result = this.executeQuantQuery(args.question_name, args.disaggregation);
             collectedData.push({ query: args, result, type: 'Quantitative' });
-            return {
+            parts.push({
               functionResponse: {
                 name: call.name,
                 response: { result: result },
                 id: call.id
               }
-            };
-          } 
-          
-          if (call.name === QUAL_TOOL_NAME) {
+            });
+          } else if (call.name === QUAL_TOOL_NAME) {
+            onProgress?.(`Querying: ${variableName} (qualitative)`);
+            // Allow UI to update
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
             const result = this.executeQualQuery(args.question_name);
             collectedData.push({ query: args, result, type: 'Qualitative' });
-            return {
+            parts.push({
               functionResponse: {
                 name: call.name,
                 response: { result: result },
                 id: call.id
               }
-            };
+            });
+          } else {
+            parts.push({
+              functionResponse: {
+                name: call.name,
+                response: { result: "Unknown tool" },
+                id: call.id
+              }
+            });
           }
+        }
 
-          return {
-            functionResponse: {
-              name: call.name,
-              response: { result: "Unknown tool" },
-              id: call.id
+        onProgress?.("Generating response from data...");
+        
+        // Race between the API call and abort signal for function calls too
+        if (signal) {
+          const abortPromise = new Promise<never>((_, reject) => {
+            const abortHandler = () => {
+              console.log('Abort signal received in service (function call loop)');
+              reject(new DOMException('Request cancelled', 'AbortError'));
+            };
+            
+            // Check if already aborted
+            if (signal.aborted) {
+              abortHandler();
+            } else {
+              signal.addEventListener('abort', abortHandler);
             }
-          };
-        });
+          });
+          
+          response = await Promise.race([
+            this.chatSession.sendMessage({ message: parts }),
+            abortPromise
+          ]);
+        } else {
+          response = await this.chatSession.sendMessage({ message: parts });
+        }
 
-        response = await this.chatSession.sendMessage({ message: parts });
         functionCalls = response.functionCalls;
         maxLoops--;
       }
@@ -403,7 +478,12 @@ export class SurveyAgent {
         dataUsed: collectedData
       };
 
-    } catch (error) {
+    } catch (error: any) {
+      // Re-throw AbortError so it can be handled by the caller
+      if (error.name === 'AbortError') {
+        console.log('AbortError caught in service, re-throwing');
+        throw error;
+      }
       console.error("Gemini Error:", error);
       return { text: "I encountered an error. Please check your data or try again." };
     }

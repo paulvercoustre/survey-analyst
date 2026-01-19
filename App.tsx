@@ -18,8 +18,12 @@ const App: React.FC = () => {
   const [input, setInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [agent, setAgent] = useState<SurveyAgent | null>(null);
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const [pendingInput, setPendingInput] = useState<string>("");
+  const [processingStage, setProcessingStage] = useState<string>("");
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const apiKey = process.env.API_KEY;
 
@@ -109,21 +113,52 @@ const App: React.FC = () => {
     if (!input.trim() || !agent || isProcessing) return;
 
     const userText = input;
-    setInput("");
+    console.log('handleSend: saving userText:', userText);
+    setPendingInput(userText);
+    setInput(""); // Clear the input immediately
     setIsProcessing(true);
+    const controller = new AbortController();
+    setAbortController(controller);
 
     addMessage({ id: Date.now().toString(), role: 'user', content: userText });
 
-    const response = await agent.sendMessage(userText);
+    try {
+      const response = await agent.sendMessage(userText, controller.signal, setProcessingStage);
+      console.log('Response received successfully');
+      setProcessingStage("");
 
-    addMessage({
-      id: (Date.now() + 1).toString(),
-      role: 'model',
-      content: response.text,
-      relatedData: response.dataUsed
-    });
-
-    setIsProcessing(false);
+      addMessage({
+        id: (Date.now() + 1).toString(),
+        role: 'model',
+        content: response.text,
+        relatedData: response.dataUsed
+      });
+      
+      // Only clear pending input on success
+      setPendingInput("");
+    } catch (error: any) {
+      console.log('Error caught in handleSend:', error.name, error.message, 'pendingInput:', userText);
+      if (error.name === 'AbortError') {
+        // Request was cancelled, remove the user message and restore input
+        console.log('Restoring input with:', userText);
+        setMessages(prev => prev.slice(0, -1));
+        setInput(userText); // Use the captured userText instead of pendingInput state
+        setPendingInput("");
+      } else {
+        // Other error occurred
+        console.log('Other error:', error);
+        addMessage({
+          id: (Date.now() + 1).toString(),
+          role: 'model',
+          content: `Error: ${error.message}`
+        });
+        setPendingInput("");
+      }
+    } finally {
+      setIsProcessing(false);
+      setAbortController(null);
+      setProcessingStage("");
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -132,6 +167,30 @@ const App: React.FC = () => {
       handleSend();
     }
   };
+
+  const handleCancel = () => {
+    console.log('Cancel clicked, pendingInput:', pendingInput);
+    if (abortController) {
+      console.log('Aborting controller');
+      abortController.abort();
+    }
+  };
+
+  const adjustTextareaHeight = () => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      const scrollHeight = textarea.scrollHeight;
+      const maxHeight = 160; // 10rem = 160px
+      const minHeight = 56; // 3.5rem = 56px
+      const newHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight);
+      textarea.style.height = `${newHeight}px`;
+    }
+  };
+
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [input]);
 
   if (!apiKey) {
       return <div className="flex items-center justify-center h-screen bg-slate-50 text-red-500 font-semibold">API Key Missing</div>
@@ -191,7 +250,7 @@ const App: React.FC = () => {
                 {isProcessing && (
                   <div className="flex justify-start animate-pulse mb-6">
                     <div className="bg-slate-100 rounded-2xl rounded-bl-none px-5 py-3 text-sm text-slate-500">
-                      Thinking & Analyzing data...
+                      {processingStage || "Thinking..."}
                     </div>
                   </div>
                 )}
@@ -202,20 +261,32 @@ const App: React.FC = () => {
             <div className="p-4 bg-white border-t border-slate-100">
               <div className="max-w-3xl mx-auto relative">
                 <textarea
+                  ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="Ask a question about the survey..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-12 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none h-[56px]"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-12 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none overflow-y-auto"
+                  style={{ height: '56px' }}
                 />
-                <button 
-                  onClick={handleSend}
-                  disabled={!input.trim() || isProcessing}
-                  className="absolute right-2 top-2 p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                <button
+                  onClick={isProcessing ? handleCancel : handleSend}
+                  disabled={isProcessing ? false : !input.trim() || isProcessing}
+                  className={`absolute right-2 bottom-3 p-2 text-white rounded-lg transition-colors ${
+                    isProcessing
+                      ? 'bg-red-600 hover:bg-red-700'
+                      : 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'
+                  }`}
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-                  </svg>
+                  {isProcessing ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clipRule="evenodd" />
+                    </svg>
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+                    </svg>
+                  )}
                 </button>
               </div>
               <p className="text-center text-xs text-slate-400 mt-2">
