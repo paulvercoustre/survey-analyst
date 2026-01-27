@@ -22,7 +22,7 @@ const App: React.FC = () => {
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const [pendingInput, setPendingInput] = useState<string>("");
   const [progressiveTraces, setProgressiveTraces] = useState<ProgressiveTrace[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string>("gemini-3-pro-preview");
+  const [selectedModel, setSelectedModel] = useState<string>("gemini-2.5-flash");
   const [selectedPersona, setSelectedPersona] = useState<string>("development_economist");
   const [customStyleGuide, setCustomStyleGuide] = useState<string>("");
   const [editingCustomStyleGuide, setEditingCustomStyleGuide] = useState<string>("");
