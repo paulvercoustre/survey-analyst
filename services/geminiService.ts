@@ -1,5 +1,5 @@
 import { GoogleGenAI, FunctionDeclaration, Type, Tool } from "@google/genai";
-import { ResultRow, QuestionnaireRow, QualitativeAnalysisRow } from "../types";
+import { ResultRow, QuestionnaireRow, QualitativeAnalysisRow, TraceMetadata, ProgressCallback } from "../types";
 
 const QUANT_TOOL_NAME = "query_survey_data";
 const QUAL_TOOL_NAME = "query_qualitative_data";
@@ -45,6 +45,148 @@ const buildQuantSurveyTool = (disaggregationValues: string[]): FunctionDeclarati
   };
 };
 
+/**
+ * Writing persona definitions - each persona has a unique writing style guide
+ */
+const WRITING_PERSONAS: Record<string, string> = {
+  development_economist: `
+      **1. The Analytical Arc (The "Funnel" Approach)**
+      Construct your paragraphs using this four-step logic:
+      
+      - **The Aggregate Baseline (The "What")**: Start with the high-level quantitative finding for the whole sample (use disaggregation='all').
+      - **The Disaggregation (The "Nuance")**: Pivot to heterogeneity. Query other disaggregation levels to reveal if trends hold across groups.
+      - **The Qualitative Mechanism (The "Why")**: Integrate qualitative findings to explain *why* the numbers look this way. Use themes and quotes to reveal trust deficits, friction points, or behavioral drivers.
+      - **The Economic Logic (The "So What")**: Conclude with the structural implication (e.g., market failure, rational survival strategy, information asymmetry, binding constraint).
+
+      **2. Integrating Qualitative Data**
+      
+      - **Triangulation**: Use qualitative data to validate or complicate the statistics. Do not treat quotes as "flavor text"; treat them as evidence of mechanisms.
+      - **Synthesis over Quotation**: Generally, synthesize qualitative themes (e.g., "Respondents frequently cited X..."). Use direct quotes only if they powerfully illustrate a structural barrier.
+      - **Explaining Outliers**: If quantitative data shows an anomaly (e.g., high revenue but low investment), use qualitative data to explain the behavioral driver.
+
+      **3. Writing Tone**
+      
+      - **Be Diagnostic**: Use data to diagnose systemic issues. Employ vocabulary like: binding constraints, asymmetry, fragmentation, compliance costs, rational choices, opportunity costs.
+      - **Precise & Professional**: Avoid dramatic adjectives. Use "severe" or "acute" only if supported by data.
+      - **Hypothesize Causality**: When linking stats and qualitative feedback, use connective phrasing like: "This qualitative evidence suggests that the statistical gap is driven by..."
+
+      **4. Example Output Structure**
+      
+      [Step 1: The Baseline Stat]
+      "Access to finance remains the primary binding constraint for the region, with 63% of surveyed firms citing it as a severe obstacle to operations.
+      
+      [Step 2: The Disaggregation/Nuance]
+      However, the data reveals a sharp divergence by gender. While male-owned firms report a reliance on supplier credit (19%), female-owned enterprises are almost entirely excluded from external financing, relying on internal savings (87%) or family networks.
+      
+      [Step 3: The Qualitative Mechanism]
+      Qualitative discussions reveal that this exclusion is not merely a lack of capital supply, but a collateral mismatch. Female respondents frequently noted that they lack title deeds for land—the primary collateral required by banks—due to customary inheritance laws. As one respondent noted, 'The banks ask for papers we are not allowed to hold.'
+      
+      [Step 4: The Economic Logic]
+      Consequently, for women-led firms, the barrier to finance is structural rather than transactional. This forces them to operate at a suboptimal scale, trapped in a low-investment, low-return equilibrium despite high potential for growth."
+  `,
+
+  policy_briefing: `
+      **1. Problem-Evidence-Recommendation Structure**
+      Organize your response using clear sections:
+      
+      - **Problem Statement**: Lead with the challenge or issue (one concise paragraph)
+      - **Evidence**: Present key quantitative findings and disaggregations (2-3 short paragraphs or bullet points)
+      - **Insight**: Briefly integrate qualitative findings to explain drivers (1 paragraph)
+      - **Implications**: State what this means for policy or action (1 paragraph, action-oriented)
+
+      **2. Writing Style**
+      
+      - **Concise & Direct**: Use short paragraphs (3-4 sentences max). Get to the point quickly.
+      - **Executive-Friendly Language**: Minimize jargon. When technical terms are necessary, briefly define them.
+      - **Active Voice**: Prefer "The data shows" over "It is shown by the data"
+      - **Scannable Format**: Use subheadings, bullet points, and bold text to highlight key findings
+      - **Numbers Front and Center**: Lead sentences with statistics. Make percentages and figures prominent.
+
+      **3. Qualitative Integration**
+      
+      - Use qualitative data to illustrate "why" but keep it brief
+      - Limit direct quotes to one per section, and only if particularly compelling
+      - Synthesize themes rather than listing multiple quotes
+      - Connect qualitative insights directly to policy implications
+
+      **4. Tone**
+      
+      - Professional but accessible
+      - Solution-oriented and pragmatic
+      - Emphasize actionable insights over theoretical frameworks
+      - Use phrases like: "The data suggests that...", "Key finding:", "This indicates a need for..."
+
+      **5. Example Output**
+      
+      **Problem**: Access to formal financing remains severely constrained, with 63% of surveyed firms reporting it as a major obstacle.
+      
+      **Evidence**: The constraint varies significantly by gender:
+      - Male-owned firms: 19% rely on supplier credit
+      - Female-owned firms: 87% rely on internal savings or family networks
+      - Almost complete exclusion from formal banking for women entrepreneurs
+      
+      **Insight**: Qualitative data reveals the core issue is collateral mismatch. Women lack land title deeds required by banks due to customary inheritance laws, creating a structural barrier rather than a simple capital shortage.
+      
+      **Implication**: Expanding financial access requires reforms beyond credit supply—including land titling reforms and alternative collateral mechanisms for women entrepreneurs.
+  `,
+
+  data_extractor: `
+      **1. Presentation Style**
+      
+      - **Factual Reporting Only**: Present statistics exactly as they appear in the data
+      - **No Interpretation**: Do not explain "why" or offer causal analysis
+      - **No Synthesis**: Report findings separately rather than weaving them together
+      - **Simple Declarative Sentences**: Use straightforward sentence structures
+
+      **2. Structure**
+      
+      - Start with overall statistics (disaggregation='all')
+      - Then present disaggregated breakdowns if queried
+      - List qualitative themes and quotes without interpretation
+      - Use clear labels for each data point
+
+      **3. Formatting**
+      
+      - Use bullet points or numbered lists for multiple data points
+      - Clearly label the variable name being reported
+      - Include sample sizes when available
+      - Present percentages, counts, or means as provided
+      - For qualitative data: list themes with prevalence, followed by quotes
+
+      **4. Language Rules**
+      
+      - Use neutral reporting verbs: "shows", "indicates", "reports"
+      - Avoid interpretive adjectives like "surprisingly", "significantly", "concerning"
+      - Do not use causal language: no "because", "therefore", "as a result"
+      - Do not compare or contrast findings unless explicitly asked
+      - State what the data shows, not what it means
+
+      **5. Example Output**
+      
+      **Variable: Access to Finance**
+      
+      Overall (all respondents):
+      - 63% reported access to finance as a severe obstacle
+      - Sample size: 450 respondents
+      
+      By gender:
+      - Male-owned firms: 19% rely on supplier credit
+      - Female-owned firms: 87% rely on internal savings or family networks
+      
+      **Qualitative findings:**
+      
+      Theme 1: Collateral requirements (mentioned by 45% of respondents)
+      - "The banks ask for papers we are not allowed to hold."
+      - "Without land title, they will not give us credit."
+      
+      Theme 2: Documentation barriers (mentioned by 32% of respondents)
+      - "Too many forms and requirements."
+      - "The process takes months and we need money now."
+  `,
+};
+
+export { WRITING_PERSONAS };
+
 export class SurveyAgent {
   private ai: GoogleGenAI;
   private results: ResultRow[];
@@ -54,20 +196,41 @@ export class SurveyAgent {
   private questionContextString: string = "";
   private validQuestionNames: Set<string> = new Set();
   private disaggregationValues: string[] = [];
+  private analysisTimeVariables: string[] = [];
+  private mainModel: string;
+  private selectorModel: string;
+  private writingStyle: string;
+  private customStyleGuide: string;
 
-  constructor(apiKey: string, results: ResultRow[], questionnaire: QuestionnaireRow[], qualitativeData: QualitativeAnalysisRow[]) {
+  constructor(
+    apiKey: string, 
+    results: ResultRow[], 
+    questionnaire: QuestionnaireRow[], 
+    qualitativeData: QualitativeAnalysisRow[],
+    mainModel: string = "gemini-3-pro-preview",
+    selectorModel: string = "gemini-3-flash-preview",
+    writingStyle: string = "development_economist",
+    customStyleGuide: string = "",
+    onInitProgress?: ProgressCallback
+  ) {
     this.ai = new GoogleGenAI({ apiKey });
     this.results = results;
     this.questionnaire = questionnaire;
     this.qualitativeData = qualitativeData;
-    this.extractDisaggregationValues();
-    this.initAgents();
+    this.mainModel = mainModel;
+    this.selectorModel = selectorModel;
+    this.writingStyle = writingStyle;
+    this.customStyleGuide = customStyleGuide;
+    this.extractDisaggregationValues(onInitProgress);
+    this.initAgents(onInitProgress);
   }
 
   /**
    * Extracts unique disaggregation values from the quantitative results data.
    */
-  private extractDisaggregationValues() {
+  private extractDisaggregationValues(onProgress?: ProgressCallback) {
+    const traceId = onProgress?.onStepStart("Identifying disaggregation levels...");
+    
     const uniqueValues = new Set<string>();
     
     for (const row of this.results) {
@@ -78,9 +241,40 @@ export class SurveyAgent {
     
     this.disaggregationValues = Array.from(uniqueValues).sort();
     console.log("📊 Extracted disaggregation values:", this.disaggregationValues);
+    
+    if (traceId && onProgress) {
+      onProgress.onStepComplete(traceId, {
+        disaggregationLevels: this.disaggregationValues
+      });
+    }
   }
 
-  private initAgents() {
+  /**
+   * Returns the appropriate writing style guide based on the selected persona.
+   */
+  private getWritingStyleGuide(): string {
+    if (this.writingStyle === 'custom' && this.customStyleGuide.trim()) {
+      return this.customStyleGuide;
+    }
+    
+    return WRITING_PERSONAS[this.writingStyle] || WRITING_PERSONAS['development_economist'];
+  }
+
+  /**
+   * Returns the appropriate role description based on the selected persona.
+   */
+  private getRoleDescription(): string {
+    const roleDescriptions: Record<string, string> = {
+      development_economist: "You are a Senior Development Economist writing analytical reports in the style of UNDP/World Bank publications.",
+      policy_briefing: "You are a policy analyst preparing concise briefings for decision-makers and executives.",
+      data_extractor: "You are a data reporting assistant that presents survey findings in a clear, factual manner without interpretation.",
+      custom: "You are a survey data analyst presenting findings according to the user's specified style guide."
+    };
+    
+    return roleDescriptions[this.writingStyle] || roleDescriptions['development_economist'];
+  }
+
+  private initAgents(onProgress?: ProgressCallback) {
     console.log("--- 🟢 Initializing Survey Agent ---");
 
     if (this.questionnaire.length === 0) {
@@ -133,6 +327,8 @@ export class SurveyAgent {
       .join('\n');
 
     // --- Extract Analysis-Time Variables from Excel Data ---
+    const traceId = onProgress?.onStepStart("Identifying analysis-time variables...");
+    
     // These are variables that exist in the results but not in the questionnaire
     const resultsVariables = new Set(this.results.map(r => r.question?.trim()).filter(Boolean));
     const analysisTimeVars: string[] = [];
@@ -148,12 +344,20 @@ export class SurveyAgent {
     let analysisContext = '';
     if (analysisTimeVars.length > 0) {
       console.log(`📈 Found ${analysisTimeVars.length} analysis-time variables:`, analysisTimeVars);
+      this.analysisTimeVariables = analysisTimeVars; // Store for trace
       analysisContext = '\n\n--- Analysis-Time Variables (created during data processing) ---\n' +
         analysisTimeVars
           .map(v => `- Variable: "${v}" | Type: analysis [QUANTITATIVE] | Question: "Analysis variable"`)
           .join('\n');
     } else {
       console.log("📈 No analysis-time variables found (all results variables exist in questionnaire)");
+      this.analysisTimeVariables = []; // Store empty array for trace
+    }
+    
+    if (traceId && onProgress) {
+      onProgress.onStepComplete(traceId, {
+        variables: this.analysisTimeVariables
+      });
     }
 
     // Combine both context strings
@@ -162,7 +366,7 @@ export class SurveyAgent {
     // --- Main System Instruction ---
     const disaggregationList = this.disaggregationValues.map(v => `'${v}'`).join(', ');
     const systemInstruction = `
-      You are a Senior Development Economist writing analytical reports in the style of UNDP/World Bank publications.
+      ${this.getRoleDescription()}
       You have access to both Quantitative (Numbers) and Qualitative (Themes/Quotes) survey data.
 
       ===== DATA SOURCES & TOOLS =====
@@ -192,40 +396,7 @@ export class SurveyAgent {
       - If a variable is marked [QUANTITATIVE], do NOT use the Qual tool on it.
 
       ===== WRITING STYLE GUIDE =====
-
-      **1. The Analytical Arc (The "Funnel" Approach)**
-      Construct your paragraphs using this four-step logic:
-      
-      - **The Aggregate Baseline (The "What")**: Start with the high-level quantitative finding for the whole sample (use disaggregation='all').
-      - **The Disaggregation (The "Nuance")**: Pivot to heterogeneity. Query other disaggregation levels to reveal if trends hold across groups.
-      - **The Qualitative Mechanism (The "Why")**: Integrate qualitative findings to explain *why* the numbers look this way. Use themes and quotes to reveal trust deficits, friction points, or behavioral drivers.
-      - **The Economic Logic (The "So What")**: Conclude with the structural implication (e.g., market failure, rational survival strategy, information asymmetry, binding constraint).
-
-      **2. Integrating Qualitative Data**
-      
-      - **Triangulation**: Use qualitative data to validate or complicate the statistics. Do not treat quotes as "flavor text"; treat them as evidence of mechanisms.
-      - **Synthesis over Quotation**: Generally, synthesize qualitative themes (e.g., "Respondents frequently cited X..."). Use direct quotes only if they powerfully illustrate a structural barrier.
-      - **Explaining Outliers**: If quantitative data shows an anomaly (e.g., high revenue but low investment), use qualitative data to explain the behavioral driver.
-
-      **3. Writing Tone**
-      
-      - **Be Diagnostic**: Use data to diagnose systemic issues. Employ vocabulary like: binding constraints, asymmetry, fragmentation, compliance costs, rational choices, opportunity costs.
-      - **Precise & Professional**: Avoid dramatic adjectives. Use "severe" or "acute" only if supported by data.
-      - **Hypothesize Causality**: When linking stats and qualitative feedback, use connective phrasing like: "This qualitative evidence suggests that the statistical gap is driven by..."
-
-      **4. Example Output Structure**
-      
-      [Step 1: The Baseline Stat]
-      "Access to finance remains the primary binding constraint for the region, with 63% of surveyed firms citing it as a severe obstacle to operations.
-      
-      [Step 2: The Disaggregation/Nuance]
-      However, the data reveals a sharp divergence by gender. While male-owned firms report a reliance on supplier credit (19%), female-owned enterprises are almost entirely excluded from external financing, relying on internal savings (87%) or family networks.
-      
-      [Step 3: The Qualitative Mechanism]
-      Qualitative discussions reveal that this exclusion is not merely a lack of capital supply, but a collateral mismatch. Female respondents frequently noted that they lack title deeds for land—the primary collateral required by banks—due to customary inheritance laws. As one respondent noted, 'The banks ask for papers we are not allowed to hold.'
-      
-      [Step 4: The Economic Logic]
-      Consequently, for women-led firms, the barrier to finance is structural rather than transactional. This forces them to operate at a suboptimal scale, trapped in a low-investment, low-return equilibrium despite high potential for growth."
+${this.getWritingStyleGuide()}
 
       ===== DRAFTING NOTES =====
       
@@ -242,7 +413,7 @@ export class SurveyAgent {
     const tools: Tool[] = [{ functionDeclarations: [querySurveyDataTool, queryQualitativeDataTool] }];
 
     this.chatSession = this.ai.chats.create({
-      model: "gemini-3-pro-preview",
+      model: this.mainModel,
       config: {
         systemInstruction,
         tools,
@@ -250,11 +421,49 @@ export class SurveyAgent {
     });
   }
 
+  /**
+   * Updates the writing style and reinitializes the chat session.
+   * This allows changing personas mid-conversation.
+   */
+  public updateWritingStyle(writingStyle: string, customStyleGuide?: string) {
+    this.writingStyle = writingStyle;
+    if (customStyleGuide !== undefined) {
+      this.customStyleGuide = customStyleGuide;
+    }
+    console.log(`🎭 Updating writing style to: ${writingStyle}`);
+    
+    // Reinitialize the chat session with new style guide
+    this.initAgents();
+  }
+
+  /**
+   * Updates the AI model and reinitializes the chat session.
+   * This allows changing models mid-conversation.
+   */
+  public updateModel(mainModel: string) {
+    this.mainModel = mainModel;
+    console.log(`🤖 Updating model to: ${mainModel}`);
+    
+    // Reinitialize the chat session with new model
+    this.initAgents();
+  }
+
+  /**
+   * Returns the initialization trace with disaggregation values and analysis-time variables.
+   * This is used to display what data structure was discovered at initialization.
+   */
+  public getInitializationTrace() {
+    return {
+      disaggregationValues: this.disaggregationValues,
+      analysisTimeVariables: this.analysisTimeVariables
+    };
+  }
+
   // --- Selector Agent (Unchanged logic, but now sees [QUALITATIVE] tags in context) ---
   private async identifyRelevantQuestions(userText: string): Promise<string[]> {
     try {
       const response = await this.ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: this.selectorModel,
         contents: `
           You are a **Questionnaire Selector Agent**.
           Map the User Request to relevant survey variables.
@@ -342,16 +551,20 @@ export class SurveyAgent {
   public async sendMessage(
     userMessage: string, 
     signal?: AbortSignal,
-    onProgress?: (stage: string) => void
-  ): Promise<{ text: string, dataUsed?: any[] }> {
+    onProgress?: ProgressCallback
+  ): Promise<{ text: string, dataUsed?: any[], trace?: TraceMetadata }> {
     try {
       // Check if already aborted
       if (signal?.aborted) {
         throw new DOMException('Request cancelled', 'AbortError');
       }
 
-      onProgress?.("Identifying relevant variables...");
+      const varTraceId = onProgress?.onStepStart("Identifying variables...");
       const relevantVars = await this.identifyRelevantQuestions(userMessage);
+      
+      if (varTraceId && onProgress) {
+        onProgress.onStepComplete(varTraceId, { variables: relevantVars });
+      }
 
       // Check again after identifyRelevantQuestions
       if (signal?.aborted) {
@@ -364,8 +577,6 @@ export class SurveyAgent {
       } else {
         messageToSend = `${userMessage}\n\n[System Note: No direct variables found. Ask for clarification if needed.]`;
       }
-
-      onProgress?.("Analyzing your question...");
       
       // Create a promise that can be aborted
       const sendMessagePromise = this.chatSession.sendMessage({ message: messageToSend });
@@ -394,7 +605,7 @@ export class SurveyAgent {
       
       let functionCalls = response.functionCalls;
       let collectedData: any[] = [];
-      let maxLoops = 5; 
+      let maxLoops = 5;
 
       while (functionCalls && functionCalls.length > 0 && maxLoops > 0) {
         // Process each function call with individual progress updates
@@ -405,12 +616,25 @@ export class SurveyAgent {
           const variableName = args.question_name || 'unknown';
 
           if (call.name === QUANT_TOOL_NAME) {
-            onProgress?.(`Querying: ${variableName} (quantitative)`);
-            // Allow UI to update
-            await new Promise(resolve => setTimeout(resolve, 100));
+            const queryTraceId = onProgress?.onStepStart(
+              `Querying: ${variableName} (quantitative)...`
+            );
             
             const result = this.executeQuantQuery(args.question_name, args.disaggregation);
             collectedData.push({ query: args, result, type: 'Quantitative' });
+            
+            if (queryTraceId && onProgress) {
+              onProgress.onStepComplete(queryTraceId, {
+                query: {
+                  questionName: args.question_name,
+                  type: 'Quantitative',
+                  disaggregation: args.disaggregation,
+                  resultCount: result.length,
+                  sampleSize: result[0]?.sample_size ? Number(result[0].sample_size) : undefined
+                }
+              });
+            }
+            
             parts.push({
               functionResponse: {
                 name: call.name,
@@ -419,12 +643,24 @@ export class SurveyAgent {
               }
             });
           } else if (call.name === QUAL_TOOL_NAME) {
-            onProgress?.(`Querying: ${variableName} (qualitative)`);
-            // Allow UI to update
-            await new Promise(resolve => setTimeout(resolve, 100));
+            const queryTraceId = onProgress?.onStepStart(
+              `Querying: ${variableName} (qualitative)...`
+            );
             
             const result = this.executeQualQuery(args.question_name);
             collectedData.push({ query: args, result, type: 'Qualitative' });
+            
+            if (queryTraceId && onProgress) {
+              onProgress.onStepComplete(queryTraceId, {
+                query: {
+                  questionName: args.question_name,
+                  type: 'Qualitative',
+                  resultCount: result.themes ? result.themes.length : 1,
+                  sampleSize: result.total_respondents ? Number(result.total_respondents) : undefined
+                }
+              });
+            }
+            
             parts.push({
               functionResponse: {
                 name: call.name,
@@ -443,7 +679,8 @@ export class SurveyAgent {
           }
         }
 
-        onProgress?.("Generating response from data...");
+        // Start thinking trace before API call
+        const thinkingTraceId = onProgress?.onStepStart("Thinking...");
         
         // Race between the API call and abort signal for function calls too
         if (signal) {
@@ -469,13 +706,29 @@ export class SurveyAgent {
           response = await this.chatSession.sendMessage({ message: parts });
         }
 
+        // Complete the thinking trace immediately after response
+        if (thinkingTraceId && onProgress) {
+          onProgress.onStepComplete(thinkingTraceId, {});
+        }
+
         functionCalls = response.functionCalls;
         maxLoops--;
       }
 
       return {
         text: response.text || "Processed data but no text response generated.",
-        dataUsed: collectedData
+        dataUsed: collectedData,
+        trace: {
+          identifiedVariables: relevantVars,
+          queriesExecuted: collectedData.map(d => ({
+            type: d.type,
+            questionName: d.query.question_name,
+            disaggregation: d.query.disaggregation,
+            resultCount: Array.isArray(d.result) ? d.result.length : (d.result.themes ? d.result.themes.length : 1),
+            sampleSize: Array.isArray(d.result) && d.result[0]?.sample_size ? Number(d.result[0].sample_size) : undefined
+          })),
+          timestamp: new Date().toISOString()
+        }
       };
 
     } catch (error: any) {

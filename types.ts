@@ -39,12 +39,53 @@ export interface QualitativeAnalysisRow {
   quotes?: string; // Triple dash delimited
 }
 
+export interface QueryTrace {
+  type: 'Quantitative' | 'Qualitative';
+  questionName: string;
+  disaggregation?: string;
+  resultCount: number;
+  sampleSize?: number;
+}
+
+export interface TraceMetadata {
+  identifiedVariables?: string[];
+  queriesExecuted?: QueryTrace[];
+  disaggregationValues?: string[];
+  analysisTimeVariables?: string[];
+  timestamp?: string;
+}
+
+export interface ProgressiveTrace {
+  id: string;
+  status: 'loading' | 'completed';
+  stepName: string;
+  details?: {
+    variables?: string[];
+    disaggregationLevels?: string[];
+    query?: {
+      questionName: string;
+      type: 'Quantitative' | 'Qualitative';
+      disaggregation?: string;
+      resultCount?: number;
+      sampleSize?: number;
+    };
+  };
+  timestamp: number;
+}
+
+export interface ProgressCallback {
+  onStepStart: (stepName: string) => string;
+  onStepComplete: (traceId: string, details?: any) => void;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'model' | 'system';
   content: string;
   isLoading?: boolean;
-  relatedData?: any[]; // Store data used for this response
+  relatedData?: any[]; // Store data used for this response (deprecated, use trace)
+  trace?: TraceMetadata; // Agent trace information (deprecated, use traces)
+  traces?: ProgressiveTrace[]; // Progressive traces for this message
 }
 
 export enum FileType {
